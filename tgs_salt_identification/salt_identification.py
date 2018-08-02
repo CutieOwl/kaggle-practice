@@ -25,7 +25,7 @@ import numpy as np
 import os
 import pandas as pd
 import pydot
-import random
+import random, math
 import itertools
 import tensorflow as tf
 from keras.applications import xception
@@ -35,7 +35,7 @@ from keras.utils import layer_utils
 from keras.utils.data_utils import get_file
 from keras.applications.imagenet_utils import preprocess_input
 from keras import layers
-from keras.layers import Input, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D
+from keras.layers import Input, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D, Concatenate
 from keras.layers.core import Lambda
 from keras.layers import AveragePooling2D, MaxPooling2D, Dropout, GlobalMaxPooling2D, GlobalAveragePooling2D
 from keras.layers.convolutional import Conv2D, Conv2DTranspose
@@ -83,14 +83,15 @@ optimizer_collections = {
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', default=8, help='Batch size', type=int)
-parser.add_argument('--nb_epochs', default=30, help='Number of Epochs', type=int)
-parser.add_argument('--optimizer', default='adam', help='Optimizer', type=str)
+parser.add_argument('--nb_epochs', default=120, help='Number of Epochs', type=int)
+parser.add_argument('--optimizer', default='adadelta', help='Optimizer', type=str)
 parser.add_argument('--split', default=None, help='Which data set to use', type=int)
 parser.add_argument('--decay', default=1e-4, help='Rate decay', type=float)
 parser.add_argument('--gpus', default=1, help='Number of GPU', type=int)
 parser.add_argument('--drops_epochs', default=0, help='Epochs which rate drop by x10', type=float)
 parser.add_argument('--lr', default=0.1, help='Learning Rate', type=float)
 
+#args = parser.parse_args("--optimizer adadelta".split())
 args = parser.parse_args()
 
 print( args )
@@ -137,7 +138,7 @@ class Tee(object):
 # ## Reading in the dataset
 # First, we locate our data at the correct directories.
 
-# In[11]:
+# In[4]:
 
 
 data_dir = '/data/kaggle/competitions/tgs-salt-identification-challenge/'
@@ -152,20 +153,30 @@ test_dir = os.path.join(test_dir, 'images')
 #sample_submission = pd.read_csv(os.path.join(data_dir, 'sample_submission.csv'))
 
 
-# In[12]:
+# Here's a little piece of code if we wanted to test out different lrs and decays
+# ```python
+# if os.path.isdir(os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay))) == False:
+#     os.mkdir(os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay)))
+#     
+# model_dir = os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay))
+# ```
+
+# In[5]:
 
 
 # Set up location of output
-if os.path.isdir(os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay))) == False:
-    os.mkdir(os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay)))
-model_dir = os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay))
+if os.path.isdir(os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))) == False:
+    os.mkdir(os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs)))
+model_dir = os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))
+if os.path.exists(os.path.join(model_dir, "training_log")) == True:
+    os.remove(os.path.join(model_dir, "training_log"))
 log_file = os.path.join(model_dir, "training_log")
 sys.stdout = Tee(log_file)
 
 
 # Let's look at some examples of data.
 
-# In[13]:
+# In[6]:
 
 
 '''
@@ -184,33 +195,125 @@ plt.show()
 '''
 
 
-# ### Let's start with the training set.
+# And some examples of depths.
 
-# In[14]:
+# In[7]:
+
+
+df_depths = pd.read_csv(os.path.join(data_dir, "depths.csv"), index_col='id')
+depths_max = df_depths['z'].max()
+depths_min = df_depths['z'].min()
+print("Max: %s, Min: %s" % (depths_max, depths_min))
+df_depths.head()
+
+
+# ### We also need to make some ImageDataGenerators.
+
+# In[8]:
+
+
+'''
+train_datagen = T.ImageDataGenerator(
+        rotation_range=90,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        rescale=1./255,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        vertical_flip=True,
+        fill_mode="constant",
+        cval=0)
+train_datagen_unch = T.ImageDataGenerator(rescale=1./255)
+'''
+
+
+# ### Let's start with the training set.
+# Here's code, for the ImageDataGenerators:
+# ```python
+# train_generator_img_unch = train_datagen_unch.flow_from_directory(
+#         train_dir_img,
+#         target_size=(IMAGE_SIZE, IMAGE_SIZE, 1),
+#         batch_size= batch_size,
+#         shuffle=False,
+#         class_mode=None)
+# train_generator_mask_unch = train_datagen_unch.flow_from_directory(
+#         train_dir_mask,
+#         target_size=(IMAGE_SIZE, IMAGE_SIZE, 1),
+#         batch_size= batch_size,
+#         shuffle=False,
+#         class_mode=None)
+# 
+# train_generator_img = train_datagen.flow_from_directory(
+#         train_dir_img,
+#         target_size=(IMAGE_SIZE, IMAGE_SIZE, 1),
+#         batch_size= batch_size,
+#         shuffle=False,
+#         class_mode=None)
+# train_generator_mask = train_datagen.flow_from_directory(
+#         train_dir_mask,
+#         target_size=(IMAGE_SIZE, IMAGE_SIZE, 1),
+#         batch_size= batch_size,
+#         shuffle=False,
+#         class_mode=None)
+# ```
+# 
+# And before I padded the pictures and added depth:
+# ```python
+# for file in os.listdir(train_dir_img):
+#     x = load_img(os.path.join(train_dir_img, file))
+#     x = img_to_array(x)[:,:,1]
+#     x = resize(x, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant', preserve_range=True)
+#     train_x[count] = x
+#     mask = load_img(os.path.join(train_dir_mask, file))
+#     mask = img_to_array(mask)[:,:,1]
+#     train_y[count] = resize(mask, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant', preserve_range=True)
+#     count += 1
+# ```
+
+# In[9]:
 
 
 TRAIN_PICS = len(os.listdir(train_dir_img))
 print(TRAIN_PICS)
-IMAGE_SIZE = 128 # pixel height and width of each image--actual size of the images is 101
+IMAGE_SIZE = 112 # pixel height and width of each image--actual size of the images is 101
 
 # Get and resize train images and masks
-train_x = np.zeros((TRAIN_PICS, IMAGE_SIZE, IMAGE_SIZE, 1), dtype=np.uint8)
+train_x = np.zeros((TRAIN_PICS, IMAGE_SIZE, IMAGE_SIZE, 2), dtype=np.float32)
 train_y = np.zeros((TRAIN_PICS, IMAGE_SIZE, IMAGE_SIZE, 1), dtype=np.bool)
 count = 0
 for file in os.listdir(train_dir_img):
-    img = load_img(os.path.join(train_dir_img, file))
-    x = img_to_array(img)[:,:,1]
-    x = resize(x, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant', preserve_range=True)
-    train_x[count] = x
-    mask = load_img(os.path.join(train_dir_mask, file))
-    mask = img_to_array(mask)[:,:,1]
-    train_y[count] = resize(mask, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant', preserve_range=True)
+    # First, the images. 
+    # Read them...
+    x = load_img(os.path.join(train_dir_img, file))
+    x = img_to_array(x)[:,:,1]
+    x = x / 255
+    cur_size = x.shape[0]
+    # ...pad them so that it's divisible by 16 and will fit the U-Net...
+    img = np.zeros((IMAGE_SIZE, IMAGE_SIZE))
+    start = math.floor((IMAGE_SIZE-cur_size)/2)
+    end = IMAGE_SIZE - math.ceil((IMAGE_SIZE-cur_size)/2)
+    img[start:end, start:end] = x
+    # ...and add depth.
+    img_depth = df_depths.loc[file.replace('.png', ''), 'z']
+    rescaled_depth = (img_depth - depths_min)/(depths_max - depths_min)
+    depth = np.full((IMAGE_SIZE, IMAGE_SIZE), rescaled_depth)
+    train_x[count] = np.stack((img, depth), axis=2)
+    
+    # Now, the masks.
+    # Read them...
+    y = load_img(os.path.join(train_dir_mask, file))
+    y = img_to_array(y)[:,:,1]
+    # ...pad them so that they're divisible by 16 and will fit the U-Net.
+    mask = np.zeros((IMAGE_SIZE, IMAGE_SIZE))
+    mask[start:end, start:end] = y
+    train_y[count] = np.expand_dims(mask, axis=2)
     count += 1
 
 
 # Let's make sure we read it in correctly by visualizing.
 
-# In[15]:
+# In[10]:
 
 
 '''
@@ -224,13 +327,41 @@ plt.show()
 '''
 
 
+# In[11]:
+
+
+'''
+print("Some training data examples.")
+img_batch, img_unch_batch = next(train_generator_img), next(train_generator_img_unch)
+mask_batch, mask_unch_batch = next(train_generator_mask), next(train_generator_mask_unch)
+for i in range (0,1):
+    image = img_batch[i]
+    print("The new image:")
+    plt.imshow(image) # .transpose(2,1,0)
+    
+    image_unch = img_unch_batch[i]
+    print("The unchanged image:")
+    plt.imshow(image_unch) # .transpose(2,1,0)
+    
+    mask = mask_batch[i]
+    print("The new mask:")
+    plt.imshow(mask) # .transpose(2,1,0)
+    
+    mask_unch = mask_unch_batch[i]
+    print("The unchanged mask:")
+    plt.imshow(mask_unch) # .transpose(2,1,0)
+    
+    plt.show()
+'''
+
+
 # ## Time for the actual model!
 # For now, I'm basing my model off of Jesper's U-Net model, which is in turn based off of Ketil's model.
 
 # ### First, an Intersection over Union metric to calculate the accuracy of our identification.
 # Remember, IoU helps in object detection by figuring out the similarity (intersection/union) of two bounding boxes.
 
-# In[16]:
+# In[12]:
 
 
 def mean_iou(y_true, y_pred):
@@ -246,111 +377,181 @@ def mean_iou(y_true, y_pred):
 
 
 # ### And now the model!
+# My original U-Net model before melding with DenseNet:
+# ```python
+# c1 = Conv2D(8, (3, 3), activation='relu', padding='same') (s)
+# c1 = Conv2D(8, (3, 3), activation='relu', padding='same') (c1)
+# p1 = MaxPooling2D((2, 2)) (c1)
+# 
+# c2 = Conv2D(16, (3, 3), activation='relu', padding='same') (p1)
+# c2 = Conv2D(16, (3, 3), activation='relu', padding='same') (c2)
+# p2 = MaxPooling2D((2, 2)) (c2)
+# 
+# c3 = Conv2D(32, (3, 3), activation='relu', padding='same') (p2)
+# c3 = Conv2D(32, (3, 3), activation='relu', padding='same') (c3)
+# p3 = MaxPooling2D((2, 2)) (c3)
+# 
+# c4 = Conv2D(64, (3, 3), activation='relu', padding='same') (p3)
+# c4 = Conv2D(64, (3, 3), activation='relu', padding='same') (c4)
+# p4 = MaxPooling2D(pool_size=(2, 2)) (c4)
+# 
+# c5 = Conv2D(128, (3, 3), activation='relu', padding='same') (p4)
+# c5 = Conv2D(128, (3, 3), activation='relu', padding='same') (c5)
+# 
+# u6 = Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same') (c5)
+# u6 = concatenate([u6, c4])
+# c6 = Conv2D(64, (3, 3), activation='relu', padding='same') (u6)
+# c6 = Conv2D(64, (3, 3), activation='relu', padding='same') (c6)
+# 
+# u7 = Conv2DTranspose(32, (2, 2), strides=(2, 2), padding='same') (c6)
+# u7 = concatenate([u7, c3])
+# c7 = Conv2D(32, (3, 3), activation='relu', padding='same') (u7)
+# c7 = Conv2D(32, (3, 3), activation='relu', padding='same') (c7)
+# 
+# u8 = Conv2DTranspose(16, (2, 2), strides=(2, 2), padding='same') (c7)
+# u8 = concatenate([u8, c2])
+# c8 = Conv2D(16, (3, 3), activation='relu', padding='same') (u8)
+# c8 = Conv2D(16, (3, 3), activation='relu', padding='same') (c8)
+# 
+# u9 = Conv2DTranspose(8, (2, 2), strides=(2, 2), padding='same') (c8)
+# u9 = concatenate([u9, c1], axis=3)
+# c9 = Conv2D(8, (3, 3), activation='relu', padding='same') (u9)
+# c9 = Conv2D(8, (3, 3), activation='relu', padding='same') (c9)
+# 
+# outputs = Conv2D(1, (1, 1), activation='sigmoid') (c9)
+# ```
 
-# In[17]:
-
-
-inputs = Input((IMAGE_SIZE, IMAGE_SIZE, 1))
-s = Lambda(lambda x: x / 255) (inputs)
-
-c1 = Conv2D(8, (3, 3), activation='relu', padding='same') (s)
-c1 = Conv2D(8, (3, 3), activation='relu', padding='same') (c1)
-p1 = MaxPooling2D((2, 2)) (c1)
-
-c2 = Conv2D(16, (3, 3), activation='relu', padding='same') (p1)
-c2 = Conv2D(16, (3, 3), activation='relu', padding='same') (c2)
-p2 = MaxPooling2D((2, 2)) (c2)
-
-c3 = Conv2D(32, (3, 3), activation='relu', padding='same') (p2)
-c3 = Conv2D(32, (3, 3), activation='relu', padding='same') (c3)
-p3 = MaxPooling2D((2, 2)) (c3)
-
-c4 = Conv2D(64, (3, 3), activation='relu', padding='same') (p3)
-c4 = Conv2D(64, (3, 3), activation='relu', padding='same') (c4)
-p4 = MaxPooling2D(pool_size=(2, 2)) (c4)
-
-c5 = Conv2D(128, (3, 3), activation='relu', padding='same') (p4)
-c5 = Conv2D(128, (3, 3), activation='relu', padding='same') (c5)
-
-u6 = Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same') (c5)
-u6 = concatenate([u6, c4])
-c6 = Conv2D(64, (3, 3), activation='relu', padding='same') (u6)
-c6 = Conv2D(64, (3, 3), activation='relu', padding='same') (c6)
-
-u7 = Conv2DTranspose(32, (2, 2), strides=(2, 2), padding='same') (c6)
-u7 = concatenate([u7, c3])
-c7 = Conv2D(32, (3, 3), activation='relu', padding='same') (u7)
-c7 = Conv2D(32, (3, 3), activation='relu', padding='same') (c7)
-
-u8 = Conv2DTranspose(16, (2, 2), strides=(2, 2), padding='same') (c7)
-u8 = concatenate([u8, c2])
-c8 = Conv2D(16, (3, 3), activation='relu', padding='same') (u8)
-c8 = Conv2D(16, (3, 3), activation='relu', padding='same') (c8)
-
-u9 = Conv2DTranspose(8, (2, 2), strides=(2, 2), padding='same') (c8)
-u9 = concatenate([u9, c1], axis=3)
-c9 = Conv2D(8, (3, 3), activation='relu', padding='same') (u9)
-c9 = Conv2D(8, (3, 3), activation='relu', padding='same') (c9)
-
-outputs = Conv2D(1, (1, 1), activation='sigmoid') (c9)
+# In[13]:
 
 
-# In[18]:
+def dense_block(x, bn_axis, channel):
+    x1 = BatchNormalization(axis=bn_axis, epsilon=1.001e-5)(x)
+    x1 = Activation('relu')(x1)
+    x1 = Conv2D(channel, 3, padding='same', use_bias=False)(x1)
+    x = Concatenate(axis=bn_axis)([x, x1])
+    return x
+
+
+# In[14]:
+
+
+def up_trans_block(x, bn_axis, channel):
+    t = BatchNormalization(axis=bn_axis, epsilon=1.001e-5)(x)
+    t = Activation('relu')(t)
+    c = Conv2D(channel, (3, 3), activation='relu', padding='same') (t)
+    p = AveragePooling2D(2, strides=2)(c)
+    return p
+
+
+# In[19]:
+
+
+def down_trans_block(x, y, bn_axis, channel):
+    t = BatchNormalization(axis=bn_axis, epsilon=1.001e-5)(x)
+    t = Activation('relu')(t)
+    c = Conv2DTranspose(channel, (2, 2), strides=(2, 2), activation='relu', padding='same') (t)
+    u6 = Concatenate(axis=bn_axis)([c, y])
+    return u6
+
+
+# In[20]:
+
+
+inputs = Input((IMAGE_SIZE, IMAGE_SIZE, 2))
+
+bn_axis = 3 if K.image_data_format() == 'channels_last' else 1
+
+b1d0 = Conv2D(8, (3, 3), activation='relu', padding='same') (inputs)
+b1d = Concatenate(axis=bn_axis)([b1d0, inputs])
+b1t = up_trans_block(b1d, bn_axis, 16)
+
+b2d = dense_block(b1t, bn_axis, 16)
+b2t = up_trans_block(b2d, bn_axis, 32)
+
+b3d = dense_block(b2t, bn_axis, 32)
+b3t = up_trans_block(b3d, bn_axis, 64)
+
+b4d = dense_block(b3t, bn_axis, 64)
+b4t = down_trans_block(b4d, b3d, bn_axis, 32)
+
+b5d = dense_block(b4t, bn_axis, 32)
+b5t = down_trans_block(b5d, b2d, bn_axis, 16)
+
+b6d = dense_block(b5t, bn_axis, 16)
+b6t = down_trans_block(b6d, b1d, bn_axis, 8)
+
+#b7d = denser_block()
+
+outputs = Conv2D(1, (1, 1), activation='sigmoid') (b6t)
+
+
+# In[21]:
 
 
 # Create the model
 saltModel = Model(inputs=[inputs], outputs=[outputs])
 
 
-# In[19]:
+# In[22]:
 
 
 # Compile the model (I'm using Adam optimizer and mean_iou accuracy for now)
 saltModel.compile(optimizer=opt, loss='binary_crossentropy', metrics=[mean_iou])
 
 
-# In[20]:
+# In[23]:
 
 
 # Let's get a summary of our model just to know what it's doing
 saltModel.summary()
 
 
-# In[21]:
+# In[24]:
 
 
 # And we finally fit the model. Notice that we add an early stopper and a check pointer.
-earlystopper = EarlyStopping(patience=5, verbose=1)
+#earlystopper = EarlyStopping(patience=5, verbose=1)
 checkpointer = ModelCheckpoint('model-tgs-salt-1.h5', verbose=1, save_best_only=True)
 results = saltModel.fit(train_x, train_y, validation_split=0.1, batch_size=batch_size, epochs=fit_epochs, 
-                    callbacks=[earlystopper, checkpointer])
+                    callbacks=[checkpointer])
 
 
 # ## And now it is time to test.
 
 # ### We read in the test set first.
 
-# In[22]:
+# In[25]:
 
 
 TEST_PICS = len(os.listdir(test_dir))
-test = np.zeros((TEST_PICS, IMAGE_SIZE, IMAGE_SIZE, 1), dtype=np.uint8)
+test = np.zeros((TEST_PICS, IMAGE_SIZE, IMAGE_SIZE, 2), dtype=np.uint8)
 test_ids = []
 sizes_test = []
 count = 0
 for file in os.listdir(test_dir):
-    img = load_img(os.path.join(test_dir, file))
-    x = img_to_array(img)[:,:,1]
+    # Read the images...
+    x = load_img(os.path.join(test_dir, file))
+    x = img_to_array(x)[:,:,1]
+    x = x / 255
+    cur_size = x.shape[0]
     sizes_test.append([x.shape[0], x.shape[1]])
-    x = resize(x, (IMAGE_SIZE, IMAGE_SIZE, 1), mode='constant', preserve_range=True)
-    test[count] = x
+    # ...pad them so that it's divisible by 16 and will fit the U-Net...
+    img = np.zeros((IMAGE_SIZE, IMAGE_SIZE))
+    start = math.floor((IMAGE_SIZE-cur_size)/2)
+    end = IMAGE_SIZE - math.ceil((IMAGE_SIZE-cur_size)/2)
+    img[start:end, start:end] = x
+    # ...and add depth.
+    img_depth = df_depths.loc[file.replace('.png', ''), 'z']
+    rescaled_depth = (img_depth - depths_min)/(depths_max - depths_min)
+    depth = np.full((IMAGE_SIZE, IMAGE_SIZE), rescaled_depth)
+    test[count] = np.stack((img, depth), axis=2)
     test_ids.append(file) # Images' ids
     count += 1
 
 
 # #### Let's print our test set!
 
-# In[23]:
+# In[26]:
 
 
 '''
@@ -361,7 +562,7 @@ plt.show()
 '''
 
 
-# In[24]:
+# In[27]:
 
 
 # Predict on train, val and test
@@ -376,7 +577,7 @@ preds_val_t = (preds_val > 0.5).astype(np.uint8)
 preds_test_t = (preds_test > 0.5).astype(np.uint8)
 
 
-# In[25]:
+# In[28]:
 
 
 # Create list of upsampled test masks
@@ -387,7 +588,7 @@ for i in tnrange(len(preds_test)):
                                        mode='constant', preserve_range=True))
 
 
-# In[26]:
+# In[29]:
 
 
 '''
@@ -410,7 +611,7 @@ plt.show()
 
 # ## Lastly, we prepare the submission.
 
-# In[27]:
+# In[30]:
 
 
 def RLenc(img, order='F', format=True):
@@ -453,7 +654,7 @@ def RLenc(img, order='F', format=True):
 pred_dict = {fn[:-4]:RLenc(np.round(preds_test_upsampled[i])) for i,fn in tqdm_notebook(enumerate(test_ids))}
 
 
-# In[28]:
+# In[31]:
 
 
 sub = pd.DataFrame.from_dict(pred_dict,orient='index')
