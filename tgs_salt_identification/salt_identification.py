@@ -4,7 +4,7 @@
 # # A model of Salt Identification with Keras ConvNet
 # Transfer learning will probably be harder with the wonky pictures of salt identification.
 
-# In[1]:
+# In[2]:
 
 
 # % matplotlib inline
@@ -68,7 +68,7 @@ from skimage.morphology import label
 
 # ## First, let's set up our optimizer so we can choose which one later on.
 
-# In[2]:
+# In[3]:
 
 
 optimizer_collections = {
@@ -91,7 +91,7 @@ parser.add_argument('--gpus', default=1, help='Number of GPU', type=int)
 parser.add_argument('--drops_epochs', default=0, help='Epochs which rate drop by x10', type=float)
 parser.add_argument('--lr', default=0.1, help='Learning Rate', type=float)
 
-#args = parser.parse_args("--optimizer adadelta".split())
+#args = parser.parse_args()
 args = parser.parse_args()
 
 print( args )
@@ -117,7 +117,7 @@ else:
 
 # ### This is a tee object to help write log output.
 
-# In[3]:
+# In[5]:
 
 
 class Tee(object):
@@ -138,7 +138,7 @@ class Tee(object):
 # ## Reading in the dataset
 # First, we locate our data at the correct directories.
 
-# In[4]:
+# In[6]:
 
 
 data_dir = '/data/kaggle/competitions/tgs-salt-identification-challenge/'
@@ -161,13 +161,13 @@ test_dir = os.path.join(test_dir, 'images')
 # model_dir = os.path.join(result_dir, "tgs-salt_%s_batch%s_epoch%s_lr%s_decay%s" % (optimizer, batch_size, fit_epochs, lr_top, args.decay))
 # ```
 
-# In[5]:
+# In[7]:
 
 
 # Set up location of output
-if os.path.isdir(os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))) == False:
-    os.mkdir(os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs)))
-model_dir = os.path.join(result_dir, "dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))
+if os.path.isdir(os.path.join(result_dir, "8.2-tgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))) == False:
+    os.mkdir(os.path.join(result_dir, "8.2-dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs)))
+model_dir = os.path.join(result_dir, "8.2-dtgs-salt_%s_batch%s_epoch%s" % (optimizer, batch_size, fit_epochs))
 if os.path.exists(os.path.join(model_dir, "training_log")) == True:
     os.remove(os.path.join(model_dir, "training_log"))
 log_file = os.path.join(model_dir, "training_log")
@@ -356,7 +356,7 @@ for i in range (0,1):
 
 
 # ## Time for the actual model!
-# For now, I'm basing my model off of Jesper's U-Net model, which is in turn based off of Ketil's model.
+# It's a mixture of a U-Net and a DenseNet.
 
 # ### First, an Intersection over Union metric to calculate the accuracy of our identification.
 # Remember, IoU helps in object detection by figuring out the similarity (intersection/union) of two bounding boxes.
@@ -443,7 +443,7 @@ def up_trans_block(x, bn_axis, channel):
     return p
 
 
-# In[19]:
+# In[15]:
 
 
 def down_trans_block(x, y, bn_axis, channel):
@@ -454,7 +454,7 @@ def down_trans_block(x, y, bn_axis, channel):
     return u6
 
 
-# In[20]:
+# In[16]:
 
 
 inputs = Input((IMAGE_SIZE, IMAGE_SIZE, 2))
@@ -485,42 +485,42 @@ b6t = down_trans_block(b6d, b1d, bn_axis, 8)
 outputs = Conv2D(1, (1, 1), activation='sigmoid') (b6t)
 
 
-# In[21]:
+# In[17]:
 
 
 # Create the model
 saltModel = Model(inputs=[inputs], outputs=[outputs])
 
 
-# In[22]:
+# In[18]:
 
 
 # Compile the model (I'm using Adam optimizer and mean_iou accuracy for now)
 saltModel.compile(optimizer=opt, loss='binary_crossentropy', metrics=[mean_iou])
 
 
-# In[23]:
+# In[19]:
 
 
 # Let's get a summary of our model just to know what it's doing
 saltModel.summary()
 
 
-# In[24]:
+# In[ ]:
 
 
 # And we finally fit the model. Notice that we add an early stopper and a check pointer.
-#earlystopper = EarlyStopping(patience=5, verbose=1)
+earlystopper = EarlyStopping(patience=5, verbose=1)
 checkpointer = ModelCheckpoint('model-tgs-salt-1.h5', verbose=1, save_best_only=True)
 results = saltModel.fit(train_x, train_y, validation_split=0.1, batch_size=batch_size, epochs=fit_epochs, 
-                    callbacks=[checkpointer])
+                    callbacks=[earlystopper, checkpointer])
 
 
 # ## And now it is time to test.
 
 # ### We read in the test set first.
 
-# In[25]:
+# In[ ]:
 
 
 TEST_PICS = len(os.listdir(test_dir))
@@ -551,7 +551,7 @@ for file in os.listdir(test_dir):
 
 # #### Let's print our test set!
 
-# In[26]:
+# In[ ]:
 
 
 '''
@@ -562,7 +562,7 @@ plt.show()
 '''
 
 
-# In[27]:
+# In[ ]:
 
 
 # Predict on train, val and test
@@ -577,7 +577,7 @@ preds_val_t = (preds_val > 0.5).astype(np.uint8)
 preds_test_t = (preds_test > 0.5).astype(np.uint8)
 
 
-# In[28]:
+# In[ ]:
 
 
 # Create list of upsampled test masks
@@ -588,7 +588,7 @@ for i in tnrange(len(preds_test)):
                                        mode='constant', preserve_range=True))
 
 
-# In[29]:
+# In[ ]:
 
 
 '''
@@ -611,7 +611,7 @@ plt.show()
 
 # ## Lastly, we prepare the submission.
 
-# In[30]:
+# In[ ]:
 
 
 def RLenc(img, order='F', format=True):
@@ -654,7 +654,7 @@ def RLenc(img, order='F', format=True):
 pred_dict = {fn[:-4]:RLenc(np.round(preds_test_upsampled[i])) for i,fn in tqdm_notebook(enumerate(test_ids))}
 
 
-# In[31]:
+# In[ ]:
 
 
 sub = pd.DataFrame.from_dict(pred_dict,orient='index')
