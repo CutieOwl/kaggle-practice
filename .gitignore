@@ -102,5 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
-*.h5
+**/*.h5
+**/result/*
 training_log
